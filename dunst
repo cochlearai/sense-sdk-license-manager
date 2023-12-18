@@ -1,0 +1,130 @@
+#!/bin/bash
+#
+#
+# Uninstall script for Sentinel LDK Runtime Environment
+#
+# return codes:
+#   0 - success
+#   1 - missing permissions (must be run as root)
+#   4 - unrecognized system
+#   6 - uninstall aksusbd RPM/DEB failed
+
+# check for root user
+if [ `id -u` -ne 0 ]; then
+    echo "Installer must be run as root" 1>&2
+    exit 1
+fi
+
+# check for Linux
+if [ `uname -s` != "Linux" ]; then
+    echo "Not running on Linux" 1>&2
+    exit 4
+fi
+
+# check if a DEB is already installed
+dpkg --help > /dev/null 2>&1
+if [ $? -ne 127 ]
+then
+    dpkg -l aksusbd 2> /dev/null | grep "^ii" > /dev/null 2>&1
+    if [ $? -eq 0 ]
+    then
+        echo "Uninstall .DEB from this system" 1>&2
+        dpkg -r aksusbd
+        if [ $? -ne 0 ]
+        then 
+            echo "Uninstall .DEB failed" 1>&2
+            exit 6
+        fi
+        exit 0
+    fi
+fi
+
+# check if a RPM is already installed
+rpm --help > /dev/null 2>&1
+if [ $? -ne 127 ]
+then
+    rpm_name=`rpm -qa 2>/dev/null | grep ^aksusbd | head -1`
+    if [ ! -z "$rpm_name" ]
+    then
+        echo "Uninstall .RPM from this system" 1>&2
+        rpm -e aksusbd
+        if [ $? -ne 0 ]
+        then 
+            echo "Uninstall .RPM failed" 1>&2
+            exit 6
+        fi
+        exit 0
+    fi
+fi
+
+# detect what we have installed
+if [ -e /etc/systemd/system/hasplmd.service ]; then
+    INIT_SYSTEM=systemd
+elif [ -e /etc/init.d/aksusbd ]; then
+    INIT_SYSTEM=sysv
+    INIT_DIR=/etc/init.d
+elif [ -e /etc/rc.d/aksusbd ]; then
+    INIT_SYSTEM=BSD
+    INIT_DIR=/etc/rc.d
+else
+    echo "Nothing to do" 1>&2
+    exit 0
+fi
+
+echo "Stop daemons"
+case $INIT_SYSTEM in
+sysv|BSD)
+    sh $INIT_DIR/aksusbd stop
+    ;;
+systemd)
+    systemctl stop aksusbd hasplmd
+    systemctl disable aksusbd hasplmd
+    ;;
+esac
+
+echo "Remove files"
+
+rm -f /usr/sbin/aksusbd
+rm -f /usr/sbin/hasplmd
+rm -f /usr/sbin/aksusbd_x86_64
+rm -f /usr/sbin/hasplmd_x86_64
+rm -f /usr/sbin/hasplmd_armhf
+rm -f /usr/sbin/hasplmd_arm64
+rm -f /etc/udev/rules.d/80-hasp.rules
+rm -f /var/hasplm/init/aksusbd.rc
+rm -f /var/hasplm/init/aksusbd.service
+rm -f /var/hasplm/init/hasplmd.service
+rm -f /var/hasplm/init/aksusbd_x86_64.service
+rm -f /var/hasplm/init/hasplmd_x86_64.service
+rm -f /var/hasplm/init/hasplmd_armhf.service
+rm -f /var/hasplm/init/hasplmd_arm64.service
+rm -f /etc/hasplm/templates/*.alp
+rm -f -r /etc/hasplm/help
+
+case $INIT_SYSTEM in
+sysv|BSD)
+    if [ -d /etc/rc.d ]; then
+        STARTUP_DIR=/etc/rc.d
+    else
+        STARTUP_DIR=/etc
+    fi
+    rm -f $STARTUP_DIR/rc2.d/S23aksusbd
+    rm -f $STARTUP_DIR/rc3.d/S23aksusbd
+    rm -f $STARTUP_DIR/rc4.d/S23aksusbd
+    rm -f $STARTUP_DIR/rc5.d/S23aksusbd
+
+    rm -f $INIT_DIR/aksusbd
+    ;;
+systemd)
+    rm -f /etc/systemd/system/aksusbd.service
+    rm -f /etc/systemd/system/hasplmd.service
+    ;;
+esac
+
+# remove files from legacy installers
+rm -f /etc/systemd/system/winehasp.service
+rm -f /etc/init.d/aksusbd
+rm -f /usr/sbin/winehasp
+
+echo "Done"
+

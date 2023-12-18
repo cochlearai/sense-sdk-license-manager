@@ -1,0 +1,5 @@
+# HASP rules
+ACTION=="add|change|bind", SUBSYSTEM=="usb", ATTRS{idVendor}=="0529", ATTRS{idProduct}=="0001", MODE="664", ENV{HASP}="1", SYMLINK+="aks/hasp/%k"
+
+# SENTINEL rules
+ACTION=="add|change|bind", SUBSYSTEM=="usb", ATTRS{idVendor}=="0529", ATTRS{idProduct}=="0003", KERNEL!="hiddev*", MODE="666", GROUP="plugdev", ENV{SENTINELHID}="1", SYMLINK+="aks/sentinelhid/%k"

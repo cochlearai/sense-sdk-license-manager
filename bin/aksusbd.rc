@@ -1,0 +1,228 @@
+#!/bin/sh
+# chkconfig: 2345 27 73
+# description: Sentinel LDK RTE
+
+### BEGIN INIT INFO
+# Provides: aksusbd
+# Required-Start: $local_fs
+# Required-Stop: $local_fs
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Description: Sentinel LDK RTE
+### END INIT INFO
+
+# daemons
+BIN=/usr/sbin/
+USB=aksusbd
+LM=hasplmd
+
+# check for root user
+if [ `id -u` -ne 0 ]
+then
+    echo "Script must be run as root" 1>&2
+    exit 1
+fi
+
+# check for Linux
+if [ `uname -s` != "Linux" ]; then
+    echo "Not running on Linux" 1>&2
+    exit 4
+fi
+
+# detect hardware platform
+ARCH=`uname -m`
+case "$ARCH" in
+    x86_64)
+        # check if the 64 bit daemons should be used
+        if [ ! -e /lib/ld-linux.so.2 -o \( -e /var/hasplm/init/force_x86_64 -a -e /usr/sbin/hasplmd_x86_64 \) ]
+        then
+            TAIL=_x86_64
+            OTHER=
+        else
+            TAIL=
+            OTHER=_x86_64
+        fi
+
+        # check if the alternative daemons are runnning
+        pgrep -x $LM$OTHER > /dev/null 2>&1
+        if [ $? -eq 0 ]
+        then
+            ARCH_SWITCH=1
+        fi
+        ;;
+    i?86)
+        TAIL=
+        OTHER=
+        ;;
+    *)
+        echo "Unsupported hardware platform" 1>&2
+        exit 8
+        ;;
+esac
+
+# check OS type
+if [ -d /run/systemd/system ]; then
+    echo "With systemd you have to use systemctl" 1>&2
+    exit 4
+elif [ -e /etc/rc.d/init.d/functions ]; then
+    CONTROL_SYSTEM="RedHat"
+elif [ -e /etc/rc.status ]; then
+    CONTROL_SYSTEM="SUSE"
+elif [ -e /etc/debian_version ]; then
+    # Debian uses start-stop-daemon instead of the LSB functions, 
+    # because the Debian implementation of killproc() doesn't wait and kill a staging process
+    CONTROL_SYSTEM="Debian"
+else
+    CONTROL_SYSTEM="Unknown"
+fi
+
+# LSB compliant script. See http://refspecs.freestandards.org/LSB_3.1.1/LSB-Core-generic/LSB-Core-generic/iniscrptfunc.html
+# For an LSB compliant script uncomment the following:
+# CONTROL_SYSTEM="LSB"
+
+case $CONTROL_SYSTEM in
+SUSE)
+    . /etc/rc.status
+    rc_reset
+    ;;
+LSB)
+    . /lib/lsb/init-functions
+    ;;
+RedHat)
+    . /etc/rc.d/init.d/functions
+    ;;
+esac
+
+
+hasp_start_daemon()
+{
+    echo "Start $1"
+
+    case $CONTROL_SYSTEM in
+    SUSE)
+        startproc $BIN$1 $2
+        rc_status -v
+        ;;
+    Debian)
+        start-stop-daemon --start --quiet --exec $BIN$1 -- $2
+        ;;
+    LSB)
+        start_daemon $BIN$1 $2
+        ;;
+    RedHat)
+        daemon $BIN$1 $2
+        ;;
+    *)
+        pgrep -x $1 >/dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            $BIN$1 $2
+        fi
+        ;;
+    esac
+}
+
+hasp_stop_daemon()
+{
+    echo "Stop $1"
+
+    case $CONTROL_SYSTEM in
+    SUSE)
+        killproc $BIN$1
+        rc_status -v
+        ;;
+    Debian)
+        start-stop-daemon --stop --quiet --retry 8 --exec $BIN$1
+        ;;
+    LSB)
+        killproc $BIN$1
+        ;;
+    RedHat)
+        killproc $BIN$1
+        ;;
+    *)
+        pgrep -x $1 >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            pkill -x $1 >/dev/null 2>&1
+            for SECONDS in 1 2 3 4 5 6 7 8 ; do
+                pgrep -x $1 >/dev/null 2>&1
+                if [ $? -ne 0 ]; then
+                    break
+                fi
+                sleep 1
+            done
+            pgrep -x $1 >/dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                pkill -x -9 $1 >/dev/null 2>&1
+                sleep 1
+            fi
+        fi
+        ;;
+    esac
+}
+
+hasp_status_daemon()
+{
+    pgrep -x $1 > /dev/null 2>&1
+    if [ $? -eq 0 ]
+    then
+        echo "$1 is running"
+    else
+        echo "$1 is NOT running"
+    fi
+}
+
+case "$1" in
+    start)
+        # If arch switch, stop the other daemons before starting the new ones
+        if [ -n "$ARCH_SWITCH" ]; then
+            hasp_stop_daemon $LM$OTHER
+            hasp_stop_daemon $USB$OTHER
+        fi
+        hasp_start_daemon $USB$TAIL ""
+        hasp_start_daemon $LM$TAIL "-s"
+        ;;
+    stop)
+        # If arch switch, stop the other daemons
+        if [ -n "$ARCH_SWITCH" ]; then
+            hasp_stop_daemon $LM$OTHER
+            hasp_stop_daemon $USB$OTHER
+        fi
+        hasp_stop_daemon $LM$TAIL
+        hasp_stop_daemon $USB$TAIL
+        ;;
+    status)
+        # If arch switch, stat the other daemons
+       if [ -n "$ARCH_SWITCH" ]; then
+            hasp_status_daemon $LM$OTHER
+            hasp_status_daemon $USB$OTHER
+        else
+            hasp_status_daemon $LM$TAIL
+            hasp_status_daemon $USB$TAIL
+        fi
+        ;;
+    force-reload|restart)
+        # If arch switch, stop the other daemons
+        if [ -n "$ARCH_SWITCH" ]; then
+            hasp_stop_daemon $LM$OTHER
+            hasp_stop_daemon $USB$OTHER
+        fi
+        hasp_stop_daemon $LM$TAIL
+        hasp_stop_daemon $USB$TAIL
+        hasp_start_daemon $USB$TAIL ""
+        hasp_start_daemon $LM$TAIL "-s"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|force-reload|status}"
+        exit 1
+        ;;
+esac
+
+case $CONTROL_SYSTEM in
+    SUSE)
+        rc_exit
+        ;;
+    RedHat)
+        exit $?
+        ;;
+esac
+

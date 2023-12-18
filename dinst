@@ -1,0 +1,399 @@
+#!/bin/bash
+#
+#
+# Install script for Sentinel LDK Runtime Environment
+#
+# return codes:
+#   0 - success
+#   1 - missing permissions (must be run as root)
+#   2 - missing source files
+#   4 - unrecognized system
+#   6 - missing RPM/DEB package
+#   7 - failed installation of RPM/DEB
+#   8 - unsupported hardware platform
+
+# detect hardware platform
+ARCH=`uname -m`
+case "$ARCH" in
+    x86_64)
+        # check if the 32 bit daemons should be used
+        if [ ! -e /lib/ld-linux.so.2 -o -e /var/hasplm/init/force_x86_64 ]
+        then
+            TAIL=_x86_64
+        else
+            TAIL=
+        fi
+        ARCHTAIL=_x86_64
+        DEBTAIL=amd64
+        RPMTAIL=x86_64
+        ;;
+    i?86)
+        TAIL=
+        ARCHTAIL=
+        DEBTAIL=i386
+        RPMTAIL=i386
+        ;;
+    armv7l)
+        TAIL=_armhf
+        ARCHTAIL=_arm
+        DEBTAIL=armhf
+        RPMTAIL=armv7hl
+        ;;
+    aarch64)
+        TAIL=_arm64
+        ARCHTAIL=_arm
+        DEBTAIL=arm64
+        RPMTAIL=aarch64
+        ;;
+    *)
+        echo "Unsupported hardware platform" 1>&2
+        exit 8
+        ;;
+esac
+
+# Start the daemons
+daemon_start()
+{
+case $INIT_SYSTEM in
+sysv|BSD)
+    sh $INIT_DIR/aksusbd start
+    ;;
+systemd)
+    if [ ${ARCHTAIL} != "_arm" ]; 
+    then
+        systemctl start aksusbd hasplmd
+    else
+        systemctl start hasplmd
+    fi
+    ;;
+esac
+}
+
+# Stop the daemons
+daemon_stop()
+{
+case $INIT_SYSTEM in
+sysv|BSD)
+    sh $INIT_DIR/aksusbd stop
+    ;;
+systemd)
+    if [ ${ARCHTAIL} != "_arm" ];
+    then
+        systemctl stop aksusbd hasplmd
+    else
+        systemctl stop hasplmd
+    fi
+    ;;
+esac
+}
+
+# Install VLIB and V2C
+install_vlib_v2c()
+{
+# copy VLIB
+if stat -t *.so > /dev/null 2>&1 ; then
+    echo "Install VLIB"
+    chmod 555 *.so
+    mkdir -p /var/hasplm/update
+    cp *.so /var/hasplm/update
+fi
+
+# install V2C
+if test -f *.[vV]2[cC] ; then
+    echo "Install V2C"
+    sleep 7
+    $src_dir/bin/install_v2c$TAIL *.[vV]2[cC]
+fi
+}
+
+# Install EMS URL
+install_ems_url()
+{
+file_emsurl=EMSUrl.properties
+file_ini=/etc/hasplm/hasplm.ini
+if [ -e $file_emsurl ]
+then
+    if [ ! -e $file_ini ]
+    then
+        touch $file_ini
+        chmod 664 $file_ini
+    fi
+    daemon_stop
+    echo "Install EMSUrl"
+    awk ' $0!="" {print "emsurl =", $1}' $file_emsurl >> $file_ini
+    daemon_start
+fi
+}
+
+# check for root user
+if [ `id -u` -ne 0 ]; then
+    echo "Installer must be run as root" 1>&2
+    exit 1
+fi
+
+# check for Linux
+if [ `uname -s` != "Linux" ]; then
+    echo "Not running on Linux" 1>&2
+    exit 4
+fi
+
+# source directory
+src_dir=.
+if [ -n "$1" ]; then
+    src_dir="$1"
+fi
+
+# destination directory
+dest_dir=/usr/sbin
+
+# detect the init system
+if [ -d /run/systemd/system ]; then
+    INIT_SYSTEM=systemd
+elif [ -d /etc/init.d ]; then
+    INIT_SYSTEM=sysv
+    INIT_DIR=/etc/init.d
+elif [ -d /etc/rc.d ]; then
+    INIT_SYSTEM=BSD
+    INIT_DIR=/etc/rc.d
+else
+    echo "Unsupported init script system" 1>&2
+    exit 4
+fi
+
+# check all needed files
+for file_name in aksusbd hasplmd hasp.rules aksusbd.rc
+do
+    if [ ! -f "$src_dir/bin/$file_name" ]
+    then
+        echo "File '$file_name' missing in '$src_dir'" 1>&2
+        echo "usage: $0 [src_dir]"  1>&2
+        echo "       [src_dir] containing files to be installed" 1>&2
+        echo "                (aksusbd, hasplmd, aksusbd.rc hasp.rules)" 1>&2
+        echo "By default, '.' will be used as [src_dir]." 1>&2
+        exit 2
+    fi
+done
+
+
+# check if a DEB is already installed
+dpkg --help > /dev/null 2>&1
+if [ $? -ne 127 ]
+then
+    FILE_NUM=`find $src_dir/pkg -maxdepth 1 -name aksusbd_\*$DEBTAIL.deb | wc -l`
+    if [ $FILE_NUM -eq 1 ]
+    then
+        PKG_VER=`dpkg -l aksusbd 2>/dev/null | grep ^ii | awk '{print $3}'`
+        if [ ! -z "$PKG_VER" ]
+        then
+            FILE_VER=`echo $src_dir/pkg/aksusbd_*$DEBTAIL.deb | sed 's?.*/aksusbd_\(.*\)_.*deb?\1?'`
+            dpkg --compare-versions $PKG_VER lt $FILE_VER
+            if [ $? -eq 0 ]
+            then
+                echo "Update .DEB on this system" 1>&2
+                dpkg -i $src_dir/pkg/aksusbd_*$DEBTAIL.deb 1>&2
+                if [ $? -ne 0 ]
+                then
+                    echo "Update .DEB failed" 1>&2
+                    exit 7
+                fi
+            else
+                echo "Package .DEB already installed" 1>&2
+            fi
+        else
+            echo "Install .DEB on this system" 1>&2
+            dpkg -i $src_dir/pkg/aksusbd_*$DEBTAIL.deb 1>&2
+            if [ $? -ne 0 ]
+            then
+                echo "Install .DEB failed" 1>&2
+                exit 7
+            fi
+        fi
+        install_vlib_v2c
+        install_ems_url
+
+        exit 0
+    elif [ $FILE_NUM -gt 1 ]
+    then
+        echo "Too many .DEB packages in $src_dir/pkg directory" 1>&2
+        exit 6
+    else
+        echo "No .DEB package in $src_dir/pkg directory" 1>&2
+        exit 6
+    fi
+fi
+
+# check is a RPM is already installed
+rpm --help > /dev/null 2>&1
+if [ $? -ne 127 ]
+then
+    FILE_NUM=`find $src_dir/pkg -maxdepth 1 -name aksusbd-\*$RPMTAIL.rpm | wc -l`
+    if [ $FILE_NUM -eq 1 ]
+    then
+        RPM_NAME=`rpm -qa 2>/dev/null | grep ^aksusbd | head -1`
+        if [ ! -z "$RPM_NAME" ]
+        then
+            echo "Update .RPM on this system" 1>&2
+            # RPM doesn't report a different error for the 'already installed' case
+            # so, we just assume that if nothing is done, it's because it's already installed
+            # and we ignore the error code
+            rpm -Uvh $src_dir/pkg/aksusbd-*$RPMTAIL.rpm 1>&2
+        else
+            echo "Install .RPM on this system" 1>&2
+            rpm -ivh $src_dir/pkg/aksusbd-*$RPMTAIL.rpm 1>&2
+            if [ $? -ne 0 ]
+            then
+                echo "Install .RPM failed" 1>&2
+                exit 7
+            fi
+        fi
+
+        install_vlib_v2c
+        install_ems_url
+
+        exit 0
+    elif [ $FILE_NUM -gt 1 ]
+    then
+        echo "Too many .RPM packages in $src_dir/pkg directory" 1>&2
+        exit 6
+    else
+        echo "No .RPM package in $src_dir/pkg directory" 1>&2
+        exit 6
+    fi
+fi
+
+echo "Copy daemons to $dest_dir"
+install -c -m 555 -g root -o root $src_dir/bin/aksusbd $dest_dir
+if [ $? -gt 0 ]
+then
+    exit $?
+fi
+install -c -m 555 -g root -o root $src_dir/bin/aksusbd_x86_64 $dest_dir
+if [ $? -gt 0 ]
+then
+    exit $?
+fi
+install -c -m 555 -g root -o root $src_dir/bin/hasplmd $dest_dir
+if [ $? -gt 0 ]
+then
+    exit $?
+fi
+install -c -m 555 -g root -o root $src_dir/bin/hasplmd_x86_64 $dest_dir
+if [ $? -gt 0 ]
+then
+    exit $?
+fi
+
+rm -f -r /etc/hasplm/templates
+mkdir -p /etc/hasplm/templates
+
+rm -f -r /etc/hasplm/help
+mkdir -p /etc/hasplm/help
+
+echo "copy language packages"
+install -c -m 644 -g root -o root $src_dir/bin/*.alp /etc/hasplm/templates
+if [ $? -gt 0 ]
+then
+    exit $?
+fi
+
+echo "copy help system language packages"
+tar -xvf $src_dir/bin/help.tar -C /etc/hasplm
+chown -R root:root /etc/hasplm/help
+chmod -R a=rX /etc/hasplm/help
+if [ $? -gt 0 ]
+then
+    exit $?
+fi
+
+mkdir -p /var/hasplm/init
+if [ ${ARCHTAIL} != "_arm" ]; 
+then
+   install -c -m 555 -g root -o root $src_dir/bin/aksusbd.rc /var/hasplm/init/aksusbd.rc
+   install -c -m 644 -g root -o root $src_dir/bin/aksusbd.service /var/hasplm/init/aksusbd.service
+   install -c -m 644 -g root -o root $src_dir/bin/hasplmd.service /var/hasplm/init/hasplmd.service
+   install -c -m 644 -g root -o root $src_dir/bin/aksusbd_x86_64.service /var/hasplm/init/aksusbd_x86_64.service
+   install -c -m 644 -g root -o root $src_dir/bin/hasplmd_x86_64.service /var/hasplm/init/hasplmd_x86_64.service
+else
+   install -c -m 644 -g root -o root $src_dir/bin/hasplmd${TAIL}.service /var/hasplm/init/hasplmd${TAIL}.service
+fi
+
+
+if [ -d /etc/udev/rules.d ]
+then
+    # remove any previous versions of the rules file, as it may have a different name
+    rm -f /etc/udev/rules.d/*-hasp.rules
+    # install the new file
+    install -c -m 644 -g root -o root $src_dir/bin/hasp${ARCHTAIL}.rules /etc/udev/rules.d/80-hasp.rules
+else
+    echo "WARNING! /etc/udev/rules.d does not exist. Is UDEV available?"
+    echo "Without UDEV it won't be possible to access Sentinel USB devices!"
+fi
+
+# check if at least one of udev and usbfs is available
+if [ ! -d /etc/udev/rules.d -a ! -f /proc/bus/usb/devices ]
+then
+    echo "WARNING! /proc/bus/usb/devices not found. Is USBFS mounted?"
+    echo "Without both UDEV and USBFS it won't be possible to access HASP USB devices!"
+fi
+
+echo "Link startup script to system startup folder"
+case $INIT_SYSTEM in
+sysv|BSD)
+    ln -s /var/hasplm/init/aksusbd.rc /etc/init.d/aksusbd
+
+    # startup directory
+    if [ -d /etc/rc.d ]; then
+        STARTUP_DIR=/etc/rc.d
+    else
+        STARTUP_DIR=/etc
+    fi
+
+    # startup link for runlevels 2,3,5
+    if [ -d $STARTUP_DIR/rc2.d ] ; then
+        ln -sf $INIT_DIR/aksusbd $STARTUP_DIR/rc2.d/S23aksusbd
+    fi
+    if [ -d $STARTUP_DIR/rc3.d ] ; then
+        ln -sf $INIT_DIR/aksusbd $STARTUP_DIR/rc3.d/S23aksusbd
+    fi
+    if [ -d $STARTUP_DIR/rc4.d ] ; then
+        ln -sf $INIT_DIR/aksusbd $STARTUP_DIR/rc4.d/S23aksusbd
+    fi
+    if [ -d $STARTUP_DIR/rc5.d ] ; then
+        ln -sf $INIT_DIR/aksusbd $STARTUP_DIR/rc5.d/S23aksusbd
+    fi
+    ;;
+systemd)
+    # we cannot use link, otherwise "systemctl enable" complains
+    if [ ${ARCHTAIL} != "_arm" ]; 
+    then
+        cp -p /var/hasplm/init/aksusbd${TAIL}.service /etc/systemd/system/aksusbd.service
+        cp -p /var/hasplm/init/hasplmd${TAIL}.service /etc/systemd/system/hasplmd.service
+        systemctl enable aksusbd hasplmd
+    else
+        cp -p /var/hasplm/init/hasplmd${TAIL}.service /etc/systemd/system/hasplmd.service
+        systemctl enable hasplmd
+    fi
+
+    systemctl enable hasplmd
+    ;;
+esac
+
+echo "Start daemons"
+case $INIT_SYSTEM in
+sysv|BSD)
+    sh $INIT_DIR/aksusbd restart
+    ;;
+systemd)
+    if [ ${ARCHTAIL} != "_arm" ];
+    then
+        systemctl restart aksusbd hasplmd
+    else
+        systemctl restart hasplmd
+    fi
+    ;;
+esac
+
+install_vlib_v2c
+install_ems_url
+
+echo "Done"

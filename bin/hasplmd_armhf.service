@@ -1,0 +1,10 @@
+[Unit]
+Description=Sentinel LDK Runtime Environment (hasplmd daemon)
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/hasplmd_armhf -s
+
+[Install]
+WantedBy=multi-user.target

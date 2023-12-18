@@ -1,0 +1,11 @@
+[Unit]
+Description=Sentinel LDK Runtime Environment (hasplmd daemon)
+Requires=aksusbd.service
+After=aksusbd.service
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/hasplmd -s
+
+[Install]
+WantedBy=multi-user.target
